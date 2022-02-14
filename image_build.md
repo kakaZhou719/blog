@@ -56,7 +56,7 @@ cloud image docker 镜像文件目录，启动cloud image的时候会将改目�
 
 `COPY mysql.tar images`
 
-#### plugins 目录
+#### plugin 目录
 
 cloud image 插件文件目录，启动cloud image的时候会将改目录内插件配置加载到runtime中被执行。
 
@@ -92,6 +92,11 @@ cloud image charts文件目录，sealer build 的时候会解析该目录中的c
 cloud image manifests文件目录，sealer build 的时候会解析该目录中的yaml文件和imageList文件，将对应的容器镜像下载并保存。
 
 样例：复制imageList文件到manifests目录。
+
+```shell
+[root@iZbp143f9driomgoqx2krlZ build]# cat imageList 
+busybox
+```
 
 `COPY imageList manifests`
 
@@ -157,7 +162,7 @@ FROM: 引用一个基础镜像，并且Kubefile中第一条指令必须是FROM�
 
 COPY: 复制构建上下文中的文件或者目录到rootfs中。
 
-集群镜像文件结构均基于[rootfs结构](../../docs/api/cloudrootfs.md),默认的目标路径即为rootfs，且当指定的目标目录不存在时会自动创建。
+集群镜像文件结构均基于rootfs结构,默认的目标路径即为rootfs，且当指定的目标目录不存在时会自动创建。
 
 如需要复制系统命令，例如复制二进制文件到操作系统的$PATH，则需要复制到rootfs中的bin目录，该二进制文件会在镜像构建和启动时，自动加载到系统$PATH中。
 
@@ -238,7 +243,7 @@ RUN echo ${Version}
 COPY mysql.tar images
 COPY imageList manifests
 COPY traefik charts
-COPY shell.yaml plugins
+COPY shell.yaml plugin
 COPY recommended.yaml manifests
 CMD kubectl apply -f manifests/recommended.yaml
 CMD helm install mytest charts/traefik
@@ -246,8 +251,8 @@ CMD helm install mytest charts/traefik
 
 build cmd line:
 
-sealer build -t my-dashboard:v1 .
+`sealer build -t my-dashboard:v1 .`
 
 run cmd line:
 
-sealer run -m 172.16.0.227 -p Seadent123 my-dashboard:v1
+`sealer run -m 172.16.0.227 -p Seadent123 my-dashboard:v1`
