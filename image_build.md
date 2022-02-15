@@ -438,7 +438,7 @@ status: { }
 
 #### build 工作流
 
-![build 流程图](img_1.png)
+![build 流程图](img_build.png)
 
 ## sealer build 实际操作
 
