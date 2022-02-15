@@ -1,6 +1,6 @@
 ## 背景介绍
 
-## cloud image rootfs 镜像格式介绍
+## cloud image rootfs 镜像内容介绍
 
 ### rootfs 树状图
 
@@ -231,6 +231,214 @@ CMD: 与RUN指令格式类似，使用系统shell执行构建命令。但CMD指�
 例如上面示例中,使用 kubectl 命令安装一个kubernetes的dashboard。
 
 `CMD kubectl apply -f recommended.yaml`
+
+## build 产物收集
+
+### overlay filesystem 介绍
+
+![overlay 层级关系图](img.png)
+
+#### overlay filesystem 挂载层级
+
+1. lower 层：指定用户需要挂载的lower层目录（支持多lower，最大支持500层）。
+2. upper 层：指定用户需要挂载的upper层目录。
+3. worker 层：指定文件系统的工作基础目录，挂载后内容会被清空，且在使用过程中其内容用户不可见。
+4. merge 层：最终的挂载点目录。
+
+挂载示例：
+
+```shell
+mkdir lower upper worker merge
+touch lower/l1
+touch upper/u1
+mount -t overlay overlay -o lowerdir=lower,upperdir=upper,workdir=worker merge
+[root@iZbp143f9driomgoqx2krlZ overlay]# mount | grep merge
+overlay on /root/overlay/merge type overlay (rw,relatime,lowerdir=lower,upperdir=upper,workdir=worker)
+```
+
+### upper 层产物收集
+
+示例：
+
+```shell
+[root@iZbp143f9driomgoqx2krlZ overlay]# ll merge/
+total 0
+-rw-r--r-- 1 root root 0 Feb 15 09:48 l1
+-rw-r--r-- 1 root root 0 Feb 15 09:48 u1
+[root@iZbp143f9driomgoqx2krlZ overlay]# touch merge/m1
+[root@iZbp143f9driomgoqx2krlZ overlay]# ll upper/
+total 0
+-rw-r--r-- 1 root root 0 Feb 15 09:51 m1
+-rw-r--r-- 1 root root 0 Feb 15 09:48 u1
+[root@iZbp143f9driomgoqx2krlZ overlay]# umount /root/overlay/merge
+[root@iZbp143f9driomgoqx2krlZ overlay]# ll upper/
+total 0
+-rw-r--r-- 1 root root 0 Feb 15 09:51 m1
+-rw-r--r-- 1 root root 0 Feb 15 09:48 u1
+```
+
+#### whiteout文件和opaque属性
+
+##### whiteout文件
+
+Whiteout文件在用户删除文件时创建，用于屏蔽底层的同名文件，同时该文件在merge层是不可见的，所以用户就看不到被删除的文件或目录了。 whiteout文件并非普通文件，而是主次设备号都为0的字符设备
+可以通过这样创建: `mknod upper/dir c 0 0`
+
+1. 在merge 层删除lower层文件时候，upper会产生，证明该文件已经被删除，lower层不发生任何变化。
+2. 在merge 层新建一个文件，该文件upper层存在格式为whiteout文件文件，则会新建一个真正的文件在upper层，lower层不发生任何变化。
+
+示例：
+
+```shell
+mount -t overlay overlay -o lowerdir=lower,upperdir=upper,workdir=worker merge
+rm -rf merge/l1
+[root@iZbp143f9driomgoqx2krlZ overlay]# umount /root/overlay/merge
+[root@iZbp143f9driomgoqx2krlZ overlay]# ll lower/l1 
+-rw-r--r-- 1 root root 0 Feb 15 09:48 lower/l1
+[root@iZbp143f9driomgoqx2krlZ overlay]# ll upper/l1 
+c--------- 1 root root 0, 0 Feb 15 09:55 upper/l1
+```
+
+##### opaque 属性
+
+"trusted.overlay.opaque"属性，针对upper层文件夹设置。 upper层中存在一个同名whiteout文件用于隐藏它，然后用户在merge层中又重新创建一个同名目录。
+依照overlayfs同名目录上下层合并的理念，如果此处不做任何特殊的处理而仅仅是在upper层中新建一个目录，那原有lower层该目录中的内容会暴露给用户。
+
+它是通过在upper层对应的目录上设置"trusted.overlay.opaque"扩展属性值为"y"
+来实现，overlayfs在读取上下层存在同名目录的目录项时，如果upper层的目录被设置了opaque属性，它将忽略这个目录下层的所有同名目录中的目录项，以保证新建的目录是一个空的目录。
+
+1. 在merge 层删除lower层文件夹时候，upper会产生该文件夹对应的whiteout文件，证明该文件已经被删除，lower层不发生任何变化。
+2. upper层存在格式为whiteout文件夹,在merge层新建一个同名的文件夹，upper层对应的whiteout文件 恢复为正常文件，且为了不暴露lower同名文件夹，设置该属性为“Y”，lower层不变。
+3. 只要从merge层写入目录，那么upper层对应的目录，一定包含 "trusted.overlay.opaque"属性，和lower层目录名字重叠与否无关。
+
+示例：
+
+```shell
+mkdir -p lower/ldir1
+touch lower/ldir1/ld1
+mount -t overlay overlay -o lowerdir=lower,upperdir=upper,workdir=worker merge
+[root@iZbp143f9driomgoqx2krlZ overlay]# ll merge/
+total 4
+drwxr-xr-x 2 root root 4096 Feb 15 10:06 ldir1
+-rw-r--r-- 1 root root    0 Feb 15 09:51 m1
+-rw-r--r-- 1 root root    0 Feb 15 09:48 u1
+rm -rf merge/ldir1
+[root@iZbp143f9driomgoqx2krlZ overlay]# ll upper/
+total 0
+c--------- 1 root root 0, 0 Feb 15 09:55 l1
+c--------- 1 root root 0, 0 Feb 15 10:07 ldir1
+-rw-r--r-- 1 root root    0 Feb 15 09:51 m1
+-rw-r--r-- 1 root root    0 Feb 15 09:48 u1
+[root@iZbp143f9driomgoqx2krlZ overlay]# mkdir merge/ldir1
+[root@iZbp143f9driomgoqx2krlZ overlay]# ll upper/
+total 4
+c--------- 1 root root 0, 0 Feb 15 09:55 l1
+drwxr-xr-x 2 root root 4096 Feb 15 10:07 ldir1
+-rw-r--r-- 1 root root    0 Feb 15 09:51 m1
+-rw-r--r-- 1 root root    0 Feb 15 09:48 u1
+[root@iZbp143f9driomgoqx2krlZ overlay]# ll upper/ldir1/
+total 0
+[root@iZbp143f9driomgoqx2krlZ overlay]# ll lower/ldir1/
+total 0
+-rw-r--r-- 1 root root 0 Feb 15 10:06 ld1
+```
+
+查看opaque属性：
+
+```shell
+[root@iZbp143f9driomgoqx2krlZ overlay]# getfattr -n "trusted.overlay.opaque" upper/ldir1
+# file: upper/ldir1
+trusted.overlay.opaque="y"
+```
+
+##### 总结
+
+1. 只要在merge层有删除，就将upper层对应文件设置为whiteout文件，无论是删除文件还是目录。
+2. 在merge 层新建，就将upper层对应的whiteout文件恢复正常文件包括文件夹和文件，且会对目录设置opaque属性。
+3. 无论任何操作，lower 层不发生变化。
+4. `getfattr`和`setfattr` 操作在merge层，报错："Operation not supported"，是因为merge层的文件都是挂载得到的。
+
+### cloud image 构建过程
+
+#### cloud image结构
+
+使用命令 `sealer inspect my-dashboard:v1` 查看镜像详情。
+
+```yaml
+kind: Image
+metadata:
+  annotations:
+    sea.aliyun.com/ClusterFile: |
+      apiVersion: sealer.cloud/v2
+      kind: Cluster
+      metadata:
+        creationTimestamp: null
+        name: my-cluster
+      spec:
+        image: my-dashboard:v1
+        ssh:
+          passwd: Sealer123
+          pk: xxx
+          pkPasswd: xxx
+          port: "22"
+          user: root
+      status: {}
+  creationTimestamp: null
+  name: my-dashboard:v1
+spec:
+  id: 03add89d420d91ee2f40f6ef0ee05285c696e30249ccdf54248b533359986ec8
+  image_config:
+    args:
+      Version: 4.0.0
+    labels: null
+  layers:
+    - id: sha256:61f2252f21454c39ec65dc86ddb05e8cf3519b3e4e024267c6598d01476ab994
+      type: COPY
+      value: . .
+    - id: sha256:a8d197c0285c852a91aa686fdf861831a76118a4a8b79748620c3be77a2e30c3
+      type: COPY
+      value: etc .
+    - type: CMD
+      value: kubectl apply -f etc/tigera-operator.yaml
+    - type: CMD
+      value: kubectl apply -f etc/custom-resources.yaml
+    - id: sha256:1dfe57535815de8a9210b5f78942c5bae837815246677b427f38070613285e5c
+      type: BASE
+      value: registry cache
+    - type: RUN
+      value: echo ${Version}
+    - id: sha256:97a31cc72079514dbb8983d046e4ea6190bb661fa54f8dda5fb9cc25f02101fa
+      type: COPY
+      value: mysql.tar images
+    - id: sha256:fd7b41e6a519c960bd7ac3b6847e01ebcea537aa4e3cdd74e4092824d0da4af0
+      type: COPY
+      value: imageList manifests
+    - id: sha256:debbc1835494283074ea524265bd3f19015b7bde9db01bab88c0145d58098361
+      type: COPY
+      value: traefik charts
+    - id: sha256:0190601589ac20c377c5f3b2f27a83147d8d1e7385e678c73314488544939a00
+      type: COPY
+      value: shell.yaml plugin
+    - id: sha256:8bc956961a50430186afaf7bcb07f7e7e0159def2e80f381abac79889b40d44b
+      type: COPY
+      value: recommended.yaml manifests
+    - type: CMD
+      value: kubectl apply -f manifests/recommended.yaml
+    - type: CMD
+      value: helm install mytest charts/traefik
+    - id: sha256:7d270b2476a8b3fd93f8db99c18234778f050760165306202cedb871d1bc2f78
+      type: BASE
+      value: rootfs cache
+  platform:
+    architecture: amd64
+    os: linux
+  sealer_version: latest
+status: { }
+```
+
+#### build 工作流
+
+![build 流程图](img_1.png)
 
 ## sealer build 实际操作
 
